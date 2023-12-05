@@ -1,0 +1,445 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Pushes logs from Log Streaming S3 bucket to Datadog.
+
+Mappings:
+  Constants:
+    DdForwarder:
+      Version: 1.0.0
+
+Parameters:
+  BucketName:
+    Description: An existing AWS S3 Bucket with CloudConnexa logs. Taken from the CloudConnexa Log Streaming configuration.
+    Type: String
+    Default: ""
+  DdApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: The Datadog API key, which can be found from the APIs page (/account/settings#api). It will be stored in AWS Secrets Manager securely. If DdApiKeySecretArn is also set, this value is ignored.
+  DdApiKeySecretArn:
+    Type: String
+    AllowedPattern: "arn:.*:secretsmanager:.*"
+    Default: "arn:aws:secretsmanager:DEFAULT"
+    Description: The ARN of the secret storing the Datadog API key, if you already have it stored in Secrets Manager. You must store the secret as a plaintext, rather than a key-value pair.
+  DdSite:
+    Description: Define your Datadog Site to send data to. Possible values are `datadoghq.com`, `datadoghq.eu`, `us3.datadoghq.com`, `us5.datadoghq.com` and `ddog-gov.com`.
+    Type: String
+    Default: ""
+  SourceZipUrl:
+    Type: String
+    Default: ""
+    Description: DO NOT CHANGE unless you know what you are doing. Override the default location of the function source code.
+  FunctionName:
+    Description: The CloudConnexa to DataDog Forwarder Lambda function name. DO NOT change when updating an existing CloudFormation stack, otherwise the current forwarder function will be replaced and all the triggers will be lost.
+    Type: String
+    Default: cloudconnexas3-to-datadog-forwarder-lambda
+  MemorySize:
+    Type: Number
+    Default: 1024
+    MinValue: 128
+    MaxValue: 10240
+    Description: Memory size for the DataDog Forwarder Lambda function
+  Timeout:
+    Type: Number
+    Default: 120
+    Description: Timeout for the DataDog Forwarder Lambda function
+  LambdaArchitecture:
+    Type: String
+    Default: arm64
+    AllowedValues:
+      - x86_64
+      - arm64
+    Description: Connexa S3 Datadog Lambda function Architecture type. arm64 can achieve significantly better price than the equivalent function running on x86_64 architecture. More details https://docs.aws.amazon.com/lambda/latest/dg/foundation-arch.html .
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Required
+        Parameters:
+          - BucketName
+          - DdApiKey
+          - DdApiKeySecretArn
+          - DdSite
+      - Label:
+          default: Lambda Function
+        Parameters:
+          - SourceZipUrl
+          - FunctionName
+          - MemorySize
+          - Timeout
+          - LambdaArchitecture
+    ParameterLabels:
+      BucketName:
+        default: "AWS S3 Bucket With CloudConnexa Logs *"
+      DdApiKey:
+        default: "DdApiKey *"
+      DdApiKeySecretArn:
+        default: "DdApiKeySecretArn *"
+      DdSite:
+        default: "DdSite *"
+      SourceZipUrl:
+        default: "Lambda Source Zip Url"
+      FunctionName:
+        default: "Lambda Function Name"
+      MemorySize:
+        default: "Lambda Memory Size"
+      Timeout:
+        default: "Lambda Timeout"
+      LambdaArchitecture:
+        default: "Lambda Architecture"
+
+Rules:
+  MustSetDdApiKey:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::Not:
+                - Fn::Equals:
+                    - Ref: DdApiKey
+                    - ""
+            - Fn::Not:
+                - Fn::Equals:
+                    - Ref: DdApiKeySecretArn
+                    - "arn:aws:secretsmanager:DEFAULT"
+        AssertDescription: DdApiKey or DdApiKeySecretArn must be set
+  MustDdSite:
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - Ref: DdSite
+                - ""
+        AssertDescription: DdSite must be set
+  MustBucketName:
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - Ref: BucketName
+                - ""
+        AssertDescription: AWS S3 Bucket With CloudConnexa Logs must be set
+
+Conditions:
+  SetSourceZipUrl:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: SourceZipUrl
+          - ""
+  CreateDdApiKeySecret:
+    Fn::Equals:
+      - Ref: DdApiKeySecretArn
+      - "arn:aws:secretsmanager:DEFAULT"
+
+Resources:
+
+  DdApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateDdApiKeySecret
+    Properties:
+      Description: Datadog API Key
+      SecretString:
+        Ref: DdApiKey
+
+  CopyZipsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: !Sub 'Copies Datadog Forwarder zip to the ${BucketName} S3 bucket'
+      Handler: index.handler
+      Role: !GetAtt 'CopyZipsRole.Arn'
+      Timeout: 300
+      Runtime: python3.11
+      Architectures: [ !Ref LambdaArchitecture ]
+      FunctionName: !Sub '${FunctionName}-copy-objects'
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import threading
+          import boto3
+          import cfnresponse
+          import urllib.request
+          
+          
+          def copy_objects(dest_bucket, prefix, objects):
+              s3 = boto3.client('s3')
+              for o in objects:
+                  source_url = o
+                  print('source_url = %s' %source_url)
+                  print('dest_bucket = %s' %dest_bucket)
+                  print('prefix = %s' %prefix)
+                  s3_prelude = "s3://"
+                  if source_url.startswith(s3_prelude):
+                      parts = source_url[len(s3_prelude):].split('/')
+                      bucket = parts[0]
+                      key = '/'.join(parts[1:])
+                      response = s3.get_object(Bucket=bucket, Key=key)
+                      data = response["Body"]
+                      s3.upload_fileobj(data, dest_bucket, prefix + key.split('/')[-1])
+                  else:
+                      with urllib.request.urlopen(source_url) as data:
+                          s3.upload_fileobj(data, dest_bucket, prefix + source_url.split('/')[-1])
+          
+          
+          def delete_objects(bucket, prefix, objects):
+              s3 = boto3.client('s3')
+              objects = {'Objects': [{'Key': prefix + o.split('/')[-1]} for o in objects]}
+              print('delete_objects = %s' %objects)
+              s3.delete_objects(Bucket=bucket, Delete=objects)
+          
+          
+          def timeout(event, context):
+              logging.error('Execution is about to time out, sending failure response to CloudFormation')
+              cfnresponse.send(event, context, cfnresponse.FAILED, {}, None)
+          
+          
+          def handler(event, context):
+              # make sure we send a failure to CloudFormation if the function
+              # is going to timeout
+              timer = threading.Timer((context.get_remaining_time_in_millis()
+                        / 1000.00) - 0.5, timeout, args=[event, context])
+              timer.start()
+          
+              print('Received event: %s' % json.dumps(event))
+              status = cfnresponse.SUCCESS
+              try:
+                  dest_bucket = event['ResourceProperties']['DestBucket']
+                  prefix = event['ResourceProperties']['Prefix']
+                  objects = event['ResourceProperties']['Objects']
+                  if event['RequestType'] == 'Delete':
+                      delete_objects(dest_bucket, prefix, objects)
+                  else:
+                      copy_objects(dest_bucket, prefix, objects)
+              except Exception as e:
+                  logging.error('Exception: %s' % e, exc_info=True)
+                  status = cfnresponse.FAILED
+              finally:
+                  timer.cancel()
+                  cfnresponse.send(event, context, status, {}, None)
+
+
+  CopyZips:
+    Type: Custom::CopyZips
+    Properties:
+      ServiceToken: !GetAtt 'CopyZipsFunction.Arn'
+      DestBucket: !Ref 'BucketName'
+      Prefix: 'CloudConnexa/'
+      Objects:
+        - Fn::If:
+            - SetSourceZipUrl
+            - !Ref SourceZipUrl
+            - Fn::Sub:
+                - "https://github.com/OpenVPN/cloud-connexa-siem/releases/download/datadog-release-v1.0.0/connexa-s3-datadog-${DdForwarderVersion}.zip"
+                - {
+                  DdForwarderVersion: !FindInMap [ Constants, DdForwarder, Version ],
+                }
+
+  CopyZipsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${FunctionName}-lambda-copier-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${BucketName}/*'
+
+  S3NotificationLambdaFunction:
+    DependsOn: CopyZips
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures: [ !Ref LambdaArchitecture ]
+      Code:
+        S3Bucket: !Ref 'BucketName'
+        S3Key:
+          Fn::Sub:
+            - "CloudConnexa/connexa-s3-datadog-${DdForwarderVersion}.zip"
+            - {
+              DdForwarderVersion: !FindInMap [ Constants, DdForwarder, Version ],
+            }
+      Handler: connexas3datadog.Handler
+      Role: !GetAtt LambdaIAMRole.Arn
+      Runtime: java17
+      Description: The CloudConnexa to DataDog Forwarder Lambda
+      MemorySize: !Ref MemorySize
+      Timeout: !Ref Timeout
+      FunctionName: !Ref FunctionName
+      Tags:
+        - Key: !Sub "${FunctionName}-version"
+          Value: !FindInMap [ Constants, DdForwarder, Version ]
+      Environment:
+        Variables:
+          DD_SITE: !Ref DdSite
+          DD_API_KEY_SECRET_ARN:
+            Fn::If:
+              - CreateDdApiKeySecret
+              - Ref: DdApiKeySecret
+              - Ref: DdApiKeySecretArn
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt S3NotificationLambdaFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub "arn:aws:s3:::${BucketName}"
+
+  LambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+      RoleName: !Sub "${FunctionName}-role"
+      Tags:
+        - Value:
+            Fn::FindInMap:
+              - Constants
+              - DdForwarder
+              - Version
+          Key: !Sub "${FunctionName}-version"
+      Policies:
+        - PolicyName: !Sub '${FunctionName}-allow-logging-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:PutLogEvents'
+                Resource: arn:aws:logs:*:*:*
+        - PolicyName: !Sub '${FunctionName}-get-objects-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: !Sub 'arn:aws:s3:::${BucketName}/*'
+        - PolicyName: !Sub '${FunctionName}-root-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetBucketNotification'
+                  - 's3:PutBucketNotification'
+                Resource: !Sub 'arn:aws:s3:::${BucketName}'
+        - PolicyName: !Sub '${FunctionName}-secrets-manager'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              # Access the Datadog API key from Secrets Manager
+              - Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  Fn::If:
+                    - CreateDdApiKeySecret
+                    - Ref: DdApiKeySecret
+                    - Fn::Sub: "${DdApiKeySecretArn}*"
+                Effect: Allow
+
+  CustomResourceLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: !Sub 'Trigger Datadog Forwarder lambda to the ${BucketName} S3 bucket'
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaIAMRole.Arn
+      Code:
+        ZipFile: |
+          
+          from __future__ import print_function
+          import json
+          import boto3
+          import cfnresponse
+          
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          
+          print('Loading function')
+          s3 = boto3.resource('s3')
+          
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event, indent=2))
+              responseData={}
+              try:
+                  if event['RequestType'] == 'Delete':
+                      print("Request Type:",event['RequestType'])
+                      Bucket=event['ResourceProperties']['Bucket']
+                      delete_notification(Bucket)
+                      print("Sending response to custom resource after Delete")
+                  elif event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                      print("Request Type:",event['RequestType'])
+                      LambdaArn=event['ResourceProperties']['LambdaArn']
+                      Bucket=event['ResourceProperties']['Bucket']
+                      add_notification(LambdaArn, Bucket)
+                      responseData={'Bucket':Bucket}
+                      print("Sending response to custom resource")
+                  responseStatus = 'SUCCESS'
+              except Exception as e:
+                  print('Failed to process:', e)
+                  responseStatus = 'FAILED'
+                  responseData = {'Failure': 'Something bad happened.'}
+              cfnresponse.send(event, context, responseStatus, responseData, "CustomResourcePhysicalID")
+          
+          def add_notification(LambdaArn, Bucket):
+              bucket_notification = s3.BucketNotification(Bucket)
+              response = bucket_notification.put(
+                NotificationConfiguration={
+                  'LambdaFunctionConfigurations': [
+                    {
+                        'LambdaFunctionArn': LambdaArn,
+                        'Events': [
+                            's3:ObjectCreated:*'
+                        ]
+                    }
+                  ]
+                }
+              )
+              print("Put request completed....")
+          
+          def delete_notification(Bucket):
+              bucket_notification = s3.BucketNotification(Bucket)
+              response = bucket_notification.put(
+                  NotificationConfiguration={}
+              )
+              print("Delete request completed....")
+      Runtime: python3.11
+      Architectures: [ !Ref LambdaArchitecture ]
+      Timeout: 50
+      FunctionName: !Sub '${FunctionName}-setup-trigger'
+
+  LambdaTrigger:
+    Type: 'Custom::LambdaTrigger'
+    DependsOn: LambdaInvokePermission
+    Properties:
+      ServiceToken: !GetAtt CustomResourceLambdaFunction.Arn
+      LambdaArn: !GetAtt S3NotificationLambdaFunction.Arn
+      Bucket: !Ref BucketName
