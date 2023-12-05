@@ -6,12 +6,12 @@ This repository contains serverless functions that process CloudConnexa's Log St
 
 The list of forwarders:
 
-1. For *DataDog*, [go here](./datadog/README.md)
+1. For **DataDog**, [go here](./datadog/README.md)
 
 ## Documentation
 
 Every forwarder should have it's own dedicated folder with description of the forwarder in README.md file.
-Every forwarder is going to have a dedicated release branch with it's version, like - datadog/release/1.0.0. It contains v1.0.x release, bugfix/security updates for DataDog.
+Every forwarder is going to have a dedicated release branch with it's version, like - datadog/release/1.0.0. It contains v1.0.0 release, bugfix/security updates for DataDog.
 
 ## Contributing
 
@@ -20,3 +20,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) file.
 ## LICENSING
 
 See [LICENSE.md](LICENSE.md) file.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) file.

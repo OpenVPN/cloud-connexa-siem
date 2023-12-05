@@ -6,10 +6,13 @@ Thank you so much for your contribution!
 
 The master branch is currently tracking development for the ongoing release cycle. Please note that, at any given time, master may be broken. Feel free to create issues against master, but have patience when using the master branch. It is recommended to use a release, and priority will be given to bugs identified in the most recent release.
 
-    feature/<feature name>          Development of a new feature. All new fucntionality should be developed in the feature branches. Create the feature branch from the 'main' branch. Is closed on the successful merge into the 'main' branch.
-    main                            <- ongoing release. All feature branches are merged into it. May be unstable. QA is performed on this branch.
-    datadog/release/1.0.0           v1.0.0 changes. Branch closed for commits.
-    datadog/release/1.0.0HF1        v1.0.0HF1 changes. Added hotfixes and security updates.
+**feature/<< feature name >>** - Development of a new feature. All new fucntionality should be developed in the feature branches. Create the feature branch from the 'main' branch. Is closed on the successful merge into the 'main' branch.
+
+**main** - ongoing release. All feature branches are merged into it. May be unstable. QA is performed on this branch.
+
+**datadog/release/1.0.0** - v1.0.0 changes. Branch closed for commits.
+
+**datadog/release/1.0.0HF1** - v1.0.0HF1 changes. Added hotfixes and security updates.
 
 ## Submitting Issues
 
