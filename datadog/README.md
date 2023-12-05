@@ -1,1 +1,3 @@
-# cloudconnexa-s3-datadog
+# Build command
+
+./gradlew build -i
