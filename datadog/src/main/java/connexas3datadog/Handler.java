@@ -37,8 +37,8 @@ public class Handler implements RequestHandler<S3Event, String> {
     private static final Logger logger = LoggerFactory.getLogger(Handler.class);
     private final String DD_SITE = "DD_SITE";
     private final String DD_API_KEY_SECRET_ARN = "DD_API_KEY_SECRET_ARN";
-    private final String LOG_DD_SOURCE = "";
-    private final String LOG_DD_TAGS = "";
+    private final String LOG_DD_SOURCE = "CloudConnexa";
+    private final String LOG_DD_TAGS = "DD_TAGS";
     private final String LOG_HOSTNAME = "";
     private final String LOG_SERVICE = "";
     private final int MAX_SIZE_PAYLOAD = 5000000;
@@ -169,7 +169,7 @@ public class Handler implements RequestHandler<S3Event, String> {
         LogsApi apiInstance = new LogsApi(defaultClient);
 
         String ddsource = LOG_DD_SOURCE;
-        String ddtags = LOG_DD_TAGS;
+        String ddtags = System.getenv(LOG_DD_TAGS);
         String hostname = LOG_HOSTNAME;
         String service = LOG_SERVICE;
 
