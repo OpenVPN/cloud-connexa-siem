@@ -5,7 +5,7 @@ Description: Pushes logs from Log Streaming S3 bucket to Datadog.
 Mappings:
   Constants:
     DdForwarder:
-      Version: 1.0.0
+      Version: 1.1.0
 
 Parameters:
   BucketName:
@@ -26,6 +26,10 @@ Parameters:
     Description: Define your Datadog Site to send data to. Possible values are `datadoghq.com`, `datadoghq.eu`, `us3.datadoghq.com`, `us5.datadoghq.com` and `ddog-gov.com`.
     Type: String
     Default: ""
+  DdTags:
+    Type: String
+    Default: ""
+    Description: Add custom tags to forwarded logs, comma-delimited string, no trailing comma, e.g., env:prod,stack:classic
   SourceZipUrl:
     Type: String
     Default: ""
@@ -62,6 +66,10 @@ Metadata:
           - DdApiKey
           - DdApiKeySecretArn
           - DdSite
+      - Label:
+          default: Log Forwarding (Optional)
+        Parameters:
+          - DdTags
       - Label:
           default: Lambda Function
         Parameters:
@@ -127,6 +135,11 @@ Conditions:
       - Fn::Equals:
           - Ref: SourceZipUrl
           - ""
+  SetDdTags:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: DdTags
+          - ""
   CreateDdApiKeySecret:
     Fn::Equals:
       - Ref: DdApiKeySecretArn
@@ -149,7 +162,7 @@ Resources:
       Handler: index.handler
       Role: !GetAtt 'CopyZipsRole.Arn'
       Timeout: 300
-      Runtime: python3.11
+      Runtime: python3.12
       Architectures: [ !Ref LambdaArchitecture ]
       FunctionName: !Sub '${FunctionName}-copy-objects'
       Code:
@@ -230,7 +243,7 @@ Resources:
             - SetSourceZipUrl
             - !Ref SourceZipUrl
             - Fn::Sub:
-                - "https://github.com/OpenVPN/cloud-connexa-siem/releases/download/datadog-release-v1.0.0/connexa-s3-datadog-${DdForwarderVersion}.zip"
+                - "https://github.com/OpenVPN/cloud-connexa-siem/releases/download/datadog-release-v${DdForwarderVersion}/connexa-s3-datadog-${DdForwarderVersion}.zip"
                 - {
                   DdForwarderVersion: !FindInMap [ Constants, DdForwarder, Version ],
                 }
@@ -275,7 +288,7 @@ Resources:
             }
       Handler: connexas3datadog.Handler
       Role: !GetAtt LambdaIAMRole.Arn
-      Runtime: java17
+      Runtime: java21
       Description: The CloudConnexa to DataDog Forwarder Lambda
       MemorySize: !Ref MemorySize
       Timeout: !Ref Timeout
@@ -285,7 +298,13 @@ Resources:
           Value: !FindInMap [ Constants, DdForwarder, Version ]
       Environment:
         Variables:
-          DD_SITE: !Ref DdSite
+          DD_SITE:
+            Ref: DdSite
+          DD_TAGS:
+            Fn::If:
+              - SetDdTags
+              - Ref: DdTags
+              - Ref: AWS::NoValue
           DD_API_KEY_SECRET_ARN:
             Fn::If:
               - CreateDdApiKeySecret
@@ -431,7 +450,7 @@ Resources:
                   NotificationConfiguration={}
               )
               print("Delete request completed....")
-      Runtime: python3.11
+      Runtime: python3.12
       Architectures: [ !Ref LambdaArchitecture ]
       Timeout: 50
       FunctionName: !Sub '${FunctionName}-setup-trigger'
