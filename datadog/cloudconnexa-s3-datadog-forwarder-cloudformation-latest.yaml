@@ -5,7 +5,7 @@ Description: Pushes logs from Log Streaming S3 bucket to Datadog.
 Mappings:
   Constants:
     DdForwarder:
-      Version: 1.1.0
+      Version: 1.1.1
 
 Parameters:
   BucketName:
